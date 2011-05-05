@@ -6,7 +6,9 @@ from django.core.urlresolvers import reverse
 from django.shortcuts import render_to_response
 from django.utils.translation import gettext as _
 from django.http import HttpResponseRedirect
+from prefinery_client import is_valid_beta_user
 
+from settings import CLOSED_BETA_MODE
 try:
     from django.views.decorators.csrf import csrf_protect
     has_csrf = True
@@ -96,6 +98,7 @@ def setup(request, template='socialregistration/setup.html',
 if has_csrf:
     setup = csrf_protect(setup)
 
+
 def facebook_login(request, template='socialregistration/facebook.html',
     extra_context=dict(), account_inactive_template='socialregistration/account_inactive.html'):
     """
@@ -110,6 +113,10 @@ def facebook_login(request, template='socialregistration/facebook.html',
     user = authenticate(uid=request.facebook.uid)
 
     if user is None:
+        profile = request.facebook.graph.get_object("me")
+        if (CLOSED_BETA_MODE and (not is_valid_beta_user(profile["email"]))):
+            return render_to_response("socialregistration/account_not_approved.html", extra_context,
+            context_instance=RequestContext(request))
         request.session['socialregistration_user'] = User()
         request.session['socialregistration_profile'] = FacebookProfile(uid=request.facebook.uid)
         request.session['next'] = _get_next(request)
