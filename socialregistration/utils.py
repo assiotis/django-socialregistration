@@ -130,9 +130,8 @@ class OpenID(object):
         self.endpoint = endpoint
         self.store = OpenIDStore()
         self.consumer = openid.Consumer(self.request.session, self.store)
-
         self.result = None
-
+                    
     def get_redirect(self):
         auth_request = self.consumer.begin(self.endpoint)
         redirect_url = auth_request.redirectURL(
@@ -143,9 +142,11 @@ class OpenID(object):
 
     def complete(self):
         self.result = self.consumer.complete(
-            dict(self.request.GET.items()),
+            # When a message is sent as a POST, OpenID parameters MUST only be
+            # sent in, and extracted from, the POST body.
+            dict(self.request.POST.items() if 'POST' == self.request.method else self.request.GET.items()),
             'http%s://%s%s' % (_https(), Site.objects.get_current(),
-                self.request.path)
+                self.request.get_full_path())
         )
 
     def is_valid(self):
@@ -166,7 +167,10 @@ def get_token_prefix(url):
         returns ``twitter.com``
 
     """
-    return urllib2.urlparse.urlparse(url).netloc
+    try:
+        return urllib2.urlparse.urlparse(url).netloc
+    except AttributeError:
+        return urllib2.rulparse.urlparse(url)[1]
 
 
 class OAuthError(Exception):
@@ -205,18 +209,17 @@ class OAuthClient(object):
         sign the request to obtain the access token
         """
         if self.request_token is None:
+            body = None
             if self.callback_url is not None:
-                params = urllib.urlencode([
-                    ('oauth_callback', 'http://%s%s' % (Site.objects.get_current(),
-                        reverse(self.callback_url))),
+                body = urllib.urlencode([
+                    ('oauth_callback', 'http://%s%s' % (
+                        Site.objects.get_current(), reverse(self.callback_url)))
                 ])
-                request_token_url = '%s?%s' % (self.request_token_url, params)
-            else:
-                request_token_url = self.request_token_url
-            response, content = self.client.request(request_token_url, "GET")
+            response, content = self.client.request(self.request_token_url,
+                                                    "POST", body=body)
             if response['status'] != '200':
                 raise OAuthError(
-                    _('Invalid response while obtaining request token from "%s".') % get_token_prefix(self.request_token_url))
+                    _('Invalid response while obtaining request token from "%s" - "%s".') % (get_token_prefix(self.request_token_url), content))
             self.request_token = dict(parse_qsl(content))
             self.request.session['oauth_%s_request_token' % get_token_prefix(self.request_token_url)] = self.request_token
         return self.request_token
@@ -232,10 +235,10 @@ class OAuthClient(object):
                 # If a callback_url is provided, the callback has to include a verifier.
                 token.set_verifier(self.request.GET.get('oauth_verifier'))
             self.client = oauth.Client(self.consumer, token)
-            response, content = self.client.request(self.access_token_url, "GET")
+            response, content = self.client.request(self.access_token_url, "POST")
             if response['status'] != '200':
                 raise OAuthError(
-                    _('Invalid response while obtaining access token from "%s".') % get_token_prefix(self.request_token_url))
+                    _('Invalid response while obtaining access token from "%s" - "%s".') % (get_token_prefix(self.request_token_url), content))
             self.access_token = dict(parse_qsl(content))
 
             self.request.session['oauth_%s_access_token' % get_token_prefix(self.request_token_url)] = self.access_token
@@ -288,6 +291,17 @@ class OAuth(object):
 
         self.request_token_url = request_token_url
 
+    def _get_rt_from_session(self):
+        """
+        Returns the request token cached in the session by ``_get_request_token``
+        """
+        try:
+            return self.request.session['oauth_%s_request_token' % get_token_prefix(self.request_token_url)]
+        except KeyError:
+            raise OAuthError(_('No request token saved for "%s".') % get_token_prefix(self.request_token_url))
+
+    request_token = property(_get_rt_from_session)
+    
     def _get_at_from_session(self):
         """
         Get the saved access token for private resources from the session.
@@ -298,14 +312,16 @@ class OAuth(object):
             raise OAuthError(
                 _('No access token saved for "%s".') % get_token_prefix(self.request_token_url))
 
+    access_token = property(_get_at_from_session)
+
     def query(self, url, method="GET", params=dict(), headers=dict()):
         """
         Request a API endpoint at ``url`` with ``params`` being either the
         POST or GET data.
         """
-        access_token = self._get_at_from_session()
+        at = self.access_token
 
-        token = oauth.Token(access_token['oauth_token'], access_token['oauth_token_secret'])
+        token = oauth.Token(at['oauth_token'], at['oauth_token_secret'])
 
         client = oauth.Client(self.consumer, token)
 
@@ -329,3 +345,9 @@ class OAuthTwitter(OAuth):
     def get_user_info(self):
         user = simplejson.loads(self.query(self.url))
         return user
+
+class OAuthLinkedIn(OAuthTwitter):
+    """
+    Verifying linkedin credentials
+    """
+    url = "http://api.linkedin.com/v1/people/~:(id)?format=json"
