@@ -215,10 +215,12 @@ class OAuthCallback(SocialRegistration, View):
             return HttpResponseRedirect(self.get_redirect())
         except KeyError:
             logger.error("Key not found in session for auth callback", exc_info=True, extra={'request': request})
-            return self.render_to_response({'error': "Session expired."})
+            return HttpResponseRedirect(self.get_next(request))
+            #return self.render_to_response({'error': "Session expired."})
         except OAuthError, error:
             logger.error("OAuth error while processing auth callback", exc_info=True, extra={'request': request})
-            return self.render_to_response({'error': error})
+            return HttpResponseRedirect(self.get_next(request))
+            #return self.render_to_response({'error': error})
 
 class SetupCallback(SocialRegistration, View):
     """
